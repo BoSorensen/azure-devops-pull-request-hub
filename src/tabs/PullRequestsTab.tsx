@@ -1,99 +1,109 @@
+import "./PullRequestTab.scss";
+
 import * as React from "react";
+import { produce } from "immer";
+
+import {
+  AZDEVOPS_CLOUD_API_ORGANIZATION,
+  AZDEVOPS_API_ORGANIZATION_RESOURCE,
+  AZDEVOPS_CLOUD_API_ORGANIZATION_OLD,
+  getCommonServiceIdsValue,
+  getZeroDataActionTypeValue,
+  getStatusSizeValue
+} from "../models/constants";
 
 import { Spinner, SpinnerSize } from "office-ui-fabric-react";
 
-//Custom
+// Custom
 import * as Data from "./PulRequestsTabData";
 
-//Azure DevOps SDK
+// Azure DevOps SDK
 import * as DevOps from "azure-devops-extension-sdk";
 
-//Azure DevOps API
-import {
-  CommonServiceIds,
-  IProjectPageService,
-  getClient
-} from "azure-devops-extension-api";
+// Azure DevOps API
+import { IProjectPageService, getClient } from "azure-devops-extension-api";
+import { CoreRestClient } from "azure-devops-extension-api/Core/CoreClient";
 import { GitRestClient } from "azure-devops-extension-api/Git/GitClient";
 import {
   IdentityRefWithVote,
-  PullRequestAsyncStatus,
   GitRepository
 } from "azure-devops-extension-api/Git/Git";
 
-//Azure DevOps UI
-import { VssPersona } from "azure-devops-ui/VssPersona";
+// Azure DevOps UI
+import { MessageCard, MessageCardSeverity } from "azure-devops-ui/MessageCard";
+import { ListSelection } from "azure-devops-ui/List";
 import { IHeaderCommandBarItem } from "azure-devops-ui/HeaderCommandBar";
-import { FilterBar } from "azure-devops-ui/FilterBar";
-import { KeywordFilterBarItem } from "azure-devops-ui/TextFilterBarItem";
+import { Observer } from "azure-devops-ui/Observer";
+import { Dialog } from "azure-devops-ui/Dialog";
 import {
   Filter,
   FILTER_CHANGE_EVENT,
   IFilterItemState
 } from "azure-devops-ui/Utilities/Filter";
-import { DropdownMultiSelection } from "azure-devops-ui/Utilities/DropdownSelection";
-import { DropdownFilterBarItem } from "azure-devops-ui/Dropdown";
+import {
+  DropdownMultiSelection,
+  DropdownSelection
+} from "azure-devops-ui/Utilities/DropdownSelection";
 import {
   ObservableArray,
   IReadonlyObservableValue
 } from "azure-devops-ui/Core/Observable";
 import { Card } from "azure-devops-ui/Card";
-import { Icon, IIconProps } from "azure-devops-ui/Icon";
-import { Link } from "azure-devops-ui/Link";
-import { Status, StatusSize, Statuses } from "azure-devops-ui/Status";
-import { ITableColumn, Table, TwoLineTableCell } from "azure-devops-ui/Table";
-import { Ago } from "azure-devops-ui/Ago";
-import { Duration } from "azure-devops-ui/Duration";
-import { Tooltip } from "azure-devops-ui/TooltipEx";
-import { css } from "azure-devops-ui/Util";
-import { Pill, PillSize, PillVariant } from "azure-devops-ui/Pill";
-import { PillGroup, PillGroupOverflow } from "azure-devops-ui/PillGroup";
-import { IColor } from "azure-devops-ui/Utilities/Color";
-import { ZeroData, ZeroDataActionType } from "azure-devops-ui/ZeroData";
+import { Status, Statuses } from "azure-devops-ui/Status";
+import { Table } from "azure-devops-ui/Table";
+import { ZeroData } from "azure-devops-ui/ZeroData";
 import { IdentityRef } from "azure-devops-extension-api/WebApi/WebApi";
+import { ObservableValue } from "azure-devops-ui/Core/Observable";
+import { IProjectInfo } from "azure-devops-extension-api/Common/CommonServices";
+import {
+  TeamProjectReference,
+  ProjectInfo
+} from "azure-devops-extension-api/Core/Core";
+import { IListBoxItem } from "azure-devops-ui/ListBox";
+import { getPullRequestDetailsAsync } from "./PulRequestsTabData";
+import { getPullRequestThreadAsync } from "./PulRequestsTabData";
+import { getPullRequestWorkItemAsync } from "./PulRequestsTabData";
+import { getPullRequestPolicyAsync } from "./PulRequestsTabData";
+import { FilterBarHub } from "../components/FilterBarHub";
+import { hasPullRequestFailure } from "../models/constants";
 
 export class PullRequestsTab extends React.Component<
   {},
   Data.IPullRequestsTabState
-> {
+  > {
+  private baseUrl: string = "";
+  private prRowSelecion = new ListSelection({
+    selectOnFocus: true,
+    multiSelect: false
+  });
+  private isDialogOpen = new ObservableValue<boolean>(false);
   private filter: Filter;
+  private selectedProject = new DropdownSelection();
   private selectedAuthors = new DropdownMultiSelection();
   private selectedRepos = new DropdownMultiSelection();
   private selectedSourceBranches = new DropdownMultiSelection();
   private selectedTargetBranches = new DropdownMultiSelection();
   private selectedReviewers = new DropdownMultiSelection();
   private selectedMyApprovalStatuses = new DropdownMultiSelection();
-  private selectedIsDraft = new DropdownMultiSelection();
+  private selectedAlternateStatusPr = new DropdownMultiSelection();
   private pullRequestItemProvider = new ObservableArray<
     | Data.PullRequestModel
     | IReadonlyObservableValue<Data.PullRequestModel | undefined>
   >();
-  private myApprovalStatuses = Object.keys(Data.ReviewerVoteOption)
-    .filter(value => !isNaN(parseInt(value, 10)))
-    .map(item => {
-      return {
-        id: item,
-        text: getVoteDescription(parseInt(item))
-      };
-    });
-
-  private isDraftItems = Object.keys(Data.YesOrNo)
-    .filter(value => !isNaN(parseInt(value, 10)))
-    .map(item => {
-      return {
-        id: item,
-        text: Object.values(Data.YesOrNo)[parseInt(item)].toString()
-      };
-    });
 
   private readonly gitClient: GitRestClient;
+  private readonly coreClient: CoreRestClient;
 
   constructor(props: {}) {
     super(props);
 
+    this.selectedProjectChanged = this.selectedProjectChanged.bind(this);
+
     this.gitClient = getClient(GitRestClient);
+    this.coreClient = getClient(CoreRestClient);
 
     this.state = {
+      projects: [],
       pullRequests: [],
       repositories: [],
       currentProject: { id: "", name: "" },
@@ -101,19 +111,20 @@ export class PullRequestsTab extends React.Component<
       sourceBranchList: [],
       targetBranchList: [],
       reviewerList: [],
-      loading: true
+      loading: true,
+      errorMessage: "",
+      pullRequestCount: 0
     };
 
     this.filter = new Filter();
   }
 
-  public async componentWillMount() {
-    DevOps.init();
-    this.initializeState();
-  }
-
-  public componentDidMount() {
-    this.setupFilter();
+  public async componentDidMount() {
+    DevOps.init().then(async () => {
+      this.initializeState();
+      this.setupFilter();
+      await this.initializePage();
+    });
   }
 
   componentWillUnmount() {
@@ -132,21 +143,155 @@ export class PullRequestsTab extends React.Component<
     this.setState({
       pullRequests: []
     });
+  }
 
-    const projectService = await DevOps.getService<IProjectPageService>(
-      // @ts-ignore
-      CommonServiceIds.ProjectPageService
-    );
+  private async initializePage() {
+    this.getOrganizationBaseUrl()
+      .then(async () => {
+        const projectService = await DevOps.getService<IProjectPageService>(
+          getCommonServiceIdsValue("ProjectPageService")
+        );
 
+        const currentProject = await projectService.getProject();
+
+        this.getTeamProjects()
+          .then(projects => {
+            this.setState({
+              projects
+            });
+
+            this.selectedProject.select(
+              projects.findIndex(p => {
+                return p.id === currentProject!.id;
+              })
+            );
+
+            this.getRepositories(currentProject!)
+              .then((repositories) => {
+                const storedRepos = this.getStoredSelectedRepositores();
+                if (storedRepos !== null) {
+                  storedRepos.forEach((repo: string) => {
+                    this.selectedRepos.select(
+                      repositories.findIndex(p => {
+                        return p.id === repo;
+                      })
+                    );
+                  });
+                }
+
+                this.getAllPullRequests().catch(error =>
+                  this.handleError(error)
+                );
+              })
+              .catch(error => {
+                this.handleError(error);
+              });
+          })
+          .catch(error => {
+            this.handleError(error);
+          });
+      })
+      .catch(error => {
+        this.handleError(error);
+      });
+  }
+
+  private handleError(error: any): void {
+    console.log(error);
     this.setState({
-      currentProject: await projectService.getProject()
+      loading: false,
+      errorMessage: "There was an error during the extension load: " + error
+    });
+  }
+
+  private async getRepositories(project: IProjectInfo | TeamProjectReference): Promise<GitRepository[]> {
+    this.setState({
+      currentProject: project
+    });
+
+    const repos = (
+      await this.gitClient.getRepositories(project.name, true)
+    ).sort((a: GitRepository, b: GitRepository) => {
+      if (a.name < b.name) {
+        return -1;
+      }
+      if (a.name > b.name) {
+        return 1;
+      }
+      return 0;
     });
 
     this.setState({
-      repositories: (await this.gitClient.getRepositories(
-        this.state.currentProject!.name,
-        true
-      )).sort((a: GitRepository, b: GitRepository) => {
+      repositories: repos
+    });
+
+    return repos;
+  }
+
+  private getStoredSelectedRepositores(): string[] | null {
+    const reposInStorage = localStorage.getItem("PRMH_SelectedRepos");
+    if (reposInStorage !== null) {
+      return JSON.parse(reposInStorage);
+    }
+
+    return null;
+  }
+
+  private storeSelectedRepositores(repositores: string[]) {
+    localStorage.setItem("PRMH_SelectedRepos", JSON.stringify(repositores))
+  }
+
+  private async getOrganizationBaseUrl() {
+    const oldOrgUrlFormat = AZDEVOPS_CLOUD_API_ORGANIZATION_OLD.replace(
+      "[org]",
+      DevOps.getHost().name
+    );
+    const url = new URL(document.referrer);
+
+    console.log("Base URL reference: " + url.toString());
+
+    if (
+      url.origin !== AZDEVOPS_CLOUD_API_ORGANIZATION &&
+      url.origin !== oldOrgUrlFormat
+    ) {
+      if (url.pathname.split("/")[1] === "tfs") {
+        const collectionName = url.pathname.split("/")[2];
+        this.baseUrl = `${url.origin}/tfs/${collectionName}/`;
+      } else {
+        const collectionName = url.pathname.split("/")[1];
+        this.baseUrl = `${url.origin}/${collectionName}/`;
+      }
+    } else {
+      const baseUrlFormat = `${AZDEVOPS_CLOUD_API_ORGANIZATION}/${AZDEVOPS_API_ORGANIZATION_RESOURCE}/?accountName=${
+        DevOps.getHost().name
+        }&api-version=5.0-preview.1`;
+
+      await fetch(baseUrlFormat)
+        .then(res => res.json())
+        .then(result => {
+          this.baseUrl = result.locationUrl;
+        })
+        .catch(error => {
+          this.handleError(
+            "Unable to fetch Organization's URL. Details: " + error
+          );
+        });
+    }
+
+    console.log("Set base URL: " + this.baseUrl);
+  }
+
+  private reloadPullRequestItemProvider(newList: Data.PullRequestModel[]) {
+    this.pullRequestItemProvider.splice(0, this.pullRequestItemProvider.length);
+    this.pullRequestItemProvider.push(...newList);
+    this.setState({
+      pullRequestCount: newList.length
+    });
+  }
+
+  private async getTeamProjects(): Promise<TeamProjectReference[]> {
+    return (await this.coreClient.getProjects()).sort(
+      (a: TeamProjectReference, b: TeamProjectReference) => {
         if (a.name < b.name) {
           return -1;
         }
@@ -154,31 +299,27 @@ export class PullRequestsTab extends React.Component<
           return 1;
         }
         return 0;
-      })
-    });
-
-    this.getAllPullRequests();
-  }
-
-  private reloadPullRequestItemProvider(newList: Data.PullRequestModel[]) {
-    this.pullRequestItemProvider.splice(0, this.pullRequestItemProvider.length);
-    this.pullRequestItemProvider.push(...newList);
+      }
+    );
   }
 
   private async getAllPullRequests() {
     this.setState({ loading: true });
-    let { repositories, pullRequests } = this.state;
+    const { repositories, pullRequests } = this.state;
 
-    //clear the pull request list to be reloaded...
-    pullRequests.splice(0, pullRequests.length);
+    let newPullRequestList = Object.assign([], pullRequests);
+
+    // clear the pull request list to be reloaded...
+    newPullRequestList.splice(0, newPullRequestList.length);
+
     this.pullRequestItemProvider = new ObservableArray<
       | Data.PullRequestModel
       | IReadonlyObservableValue<Data.PullRequestModel | undefined>
-    >();
+    >([]);
 
     Promise.all(
       repositories.map(async r => {
-        let criteria = Object.assign({}, Data.pullRequestCriteria);
+        const criteria = Object.assign({}, Data.pullRequestCriteria);
 
         const loadedPullRequests = await this.gitClient.getPullRequests(
           r.id,
@@ -190,41 +331,83 @@ export class PullRequestsTab extends React.Component<
     )
       .then(loadedPullRequests => {
         loadedPullRequests.map(pr => {
-          if (!pr || pr.length === 0) return pr;
+          if (!pr || pr.length === 0) {
+            return pr;
+          }
 
-          pullRequests.push(
+          newPullRequestList.push(
             ...Data.PullRequestModel.getModels(
               pr,
-              this.state.currentProject!.name
+              this.state.currentProject!.name,
+              this.baseUrl
             )
           );
           return pr;
         });
       })
+      .catch(error => {
+        this.handleError(error);
+      })
       .finally(() => {
-        if (pullRequests.length > 0) {
+        if (newPullRequestList.length > 0) {
+          newPullRequestList = newPullRequestList.sort(
+            (a: Data.PullRequestModel, b: Data.PullRequestModel) => {
+              return (
+                a.gitPullRequest.creationDate.getTime() -
+                b.gitPullRequest.creationDate.getTime()
+              );
+            }
+          );
+
           this.setState({
-            pullRequests
+            pullRequests: newPullRequestList
           });
         }
 
         this.loadLists();
+
+        const pullRequestDetails = getPullRequestDetailsAsync(
+          newPullRequestList
+        );
+
+        const pullRequestThread = getPullRequestThreadAsync(newPullRequestList);
+
+        const pullRequestWorkItem = getPullRequestWorkItemAsync(
+          newPullRequestList
+        );
+
+        const pullRequestPolicy = getPullRequestPolicyAsync(newPullRequestList);
+
+        Promise.all([
+          pullRequestDetails,
+          pullRequestThread,
+          pullRequestWorkItem,
+          pullRequestPolicy
+        ])
+          .then(updated => {
+            this.setState(
+              produce<Data.IPullRequestsTabState>(
+                (draftObject: { pullRequests: Data.PullRequestModel[] }) => {
+                  draftObject.pullRequests = updated[0];
+                }
+              )
+            );
+
+            this.filterPullRequests();
+          })
+          .catch(error => {
+            console.log(
+              "There was an error fetching addtional details for the PRs. Error: " +
+              error
+            );
+          });
       });
   }
 
   private loadLists() {
-    let { pullRequests } = this.state;
+    const { pullRequests } = this.state;
 
     this.reloadPullRequestItemProvider([]);
-
-    pullRequests = pullRequests.sort(
-      (a: Data.PullRequestModel, b: Data.PullRequestModel) => {
-        return (
-          a.gitPullRequest.creationDate.getTime() -
-          b.gitPullRequest.creationDate.getTime()
-        );
-      }
-    );
 
     this.pullRequestItemProvider.push(...pullRequests);
 
@@ -236,11 +419,19 @@ export class PullRequestsTab extends React.Component<
   private filterPullRequests() {
     const { pullRequests } = this.state;
 
+    const repos = this.filter.getFilterItemValue<string[]>("selectedRepos");
+    let repositoriesFilter = repos;
+    if (repos === undefined) {
+      const storedRepos = this.getStoredSelectedRepositores();
+      if (storedRepos !== null) {
+        repositoriesFilter = storedRepos;
+      }
+    } else {
+      this.storeSelectedRepositores(repos);
+    }
+
     const filterPullRequestTitle = this.filter.getFilterItemValue<string>(
       "pullRequestTitle"
-    );
-    const repositoriesFilter = this.filter.getFilterItemValue<string[]>(
-      "selectedRepos"
     );
     const sourceBranchFilter = this.filter.getFilterItemValue<string[]>(
       "selectedSourceBranches"
@@ -259,9 +450,9 @@ export class PullRequestsTab extends React.Component<
       "selectedMyApprovalStatuses"
     );
 
-    const isDraftFilter = this.filter.getFilterItemValue<number[]>(
-      "selectedIsDraft"
-    );
+    const selectedAlternateStatusPrFilter = this.filter.getFilterItemValue<
+      number[]
+    >("selectedAlternateStatusPr");
 
     let filteredPullRequest = pullRequests;
 
@@ -277,7 +468,7 @@ export class PullRequestsTab extends React.Component<
 
     if (repositoriesFilter && repositoriesFilter.length > 0) {
       filteredPullRequest = filteredPullRequest.filter(pr => {
-        const found = repositoriesFilter.some(r => {
+        const found = repositoriesFilter!.some(r => {
           return pr.gitPullRequest.repository.id === r;
         });
 
@@ -330,17 +521,28 @@ export class PullRequestsTab extends React.Component<
       filteredPullRequest = filteredPullRequest.filter(pr => {
         const found = myApprovalStatusFilter.some(vote => {
           return (
-            pr.myApprovalStatus === (parseInt(vote) as Data.ReviewerVoteOption)
+            pr.myApprovalStatus ===
+            (parseInt(vote, 10) as Data.ReviewerVoteOption)
           );
         });
         return found;
       });
     }
 
-    if (isDraftFilter && isDraftFilter.length > 0) {
+    if (
+      selectedAlternateStatusPrFilter &&
+      selectedAlternateStatusPrFilter.length > 0
+    ) {
       filteredPullRequest = filteredPullRequest.filter(pr => {
-        const found = isDraftFilter.some(item => {
-          return pr.gitPullRequest.isDraft === (item == 1);
+        const found = selectedAlternateStatusPrFilter.some(item => {
+          return (
+            // tslint:disable-next-line:triple-equals
+            (pr.gitPullRequest.isDraft === true && item == 0) ||
+            // tslint:disable-next-line:triple-equals
+            (hasPullRequestFailure(pr) === true && item == 1) ||
+            // tslint:disable-next-line:triple-equals
+            (pr.isAutoCompleteSet === true && item == 2)
+          );
         });
         return found;
       });
@@ -352,14 +554,14 @@ export class PullRequestsTab extends React.Component<
   private hasFilterValue(
     list: Array<Data.BranchDropDownItem | IdentityRef | IdentityRefWithVote>,
     value: any
-  ): Boolean {
+  ): boolean {
     return list.some(item => {
       if (item.hasOwnProperty("id")) {
         const convertedValue = item as IdentityRef;
-        return convertedValue.id === value;
-      } else if (item.constructor.name === "BranchDropDownItem") {
+        return convertedValue.id.localeCompare(value) === 0;
+      } else if (item.hasOwnProperty("branchName")) {
         const convertedValue = item as Data.BranchDropDownItem;
-        return convertedValue.displayName === value;
+        return convertedValue.displayName.localeCompare(value) === 0;
       } else {
         return item === value;
       }
@@ -389,13 +591,19 @@ export class PullRequestsTab extends React.Component<
         createdByList.push(pr.gitPullRequest.createdBy);
       }
 
-      found = this.hasFilterValue(sourceBranchList, pr.sourceBranch!.displayName);
+      found = this.hasFilterValue(
+        sourceBranchList,
+        pr.sourceBranch!.displayName
+      );
 
       if (found === false) {
         sourceBranchList.push(pr.sourceBranch!);
       }
 
-      found = this.hasFilterValue(targetBranchList, pr.targetBranch!.displayName);
+      found = this.hasFilterValue(
+        targetBranchList,
+        pr.targetBranch!.displayName
+      );
 
       if (found === false) {
         targetBranchList.push(pr.targetBranch!);
@@ -419,10 +627,10 @@ export class PullRequestsTab extends React.Component<
       return pr;
     });
 
-    sourceBranchList = sourceBranchList.sort(sortMethod);
-    targetBranchList = targetBranchList.sort(sortMethod);
-    createdByList = createdByList.sort(sortMethod);
-    reviewerList = reviewerList.sort(sortMethod);
+    sourceBranchList = sourceBranchList.sort(Data.sortMethod);
+    targetBranchList = targetBranchList.sort(Data.sortMethod);
+    createdByList = createdByList.sort(Data.sortMethod);
+    reviewerList = reviewerList.sort(Data.sortMethod);
 
     const selectionObjectList = [
       "selectedAuthors",
@@ -460,6 +668,8 @@ export class PullRequestsTab extends React.Component<
           filterStateValueList.splice(itemIndex, 1);
           selectionFilterObjects[index].clear();
         }
+
+        return found;
       });
 
       this.filter.setFilterItemState(objectKey, filterItemState);
@@ -474,17 +684,23 @@ export class PullRequestsTab extends React.Component<
   };
 
   refresh = async () => {
-    await this.getAllPullRequests();
+    await this.getAllPullRequests().catch(error => this.handleError(error));
+  };
+
+  onHelpDismiss = () => {
+    this.isDialogOpen.value = false;
   };
 
   public render(): JSX.Element {
     const {
+      projects,
       repositories,
       createdByList,
       sourceBranchList,
       targetBranchList,
       reviewerList,
-      loading
+      loading,
+      errorMessage
     } = this.state;
 
     if (loading === true) {
@@ -497,130 +713,66 @@ export class PullRequestsTab extends React.Component<
     }
 
     return (
-      <div>
-        <FilterBar filter={this.filter}>
-          <KeywordFilterBarItem
-            filterItemKey="pullRequestTitle"
-            placeholder={"Search Pull Requests"}
-            filter={this.filter}
+      <div className="flex-column">
+        <FilterBarHub
+          filter={this.filter}
+          selectedProjectChanged={this.selectedProjectChanged}
+          selectedProject={this.selectedProject}
+          projects={projects}
+          repositories={repositories}
+          selectedRepos={this.selectedRepos}
+          sourceBranchList={sourceBranchList}
+          selectedSourceBranches={this.selectedSourceBranches}
+          targetBranchList={targetBranchList}
+          selectedTargetBranches={this.selectedTargetBranches}
+          createdByList={createdByList}
+          selectedAuthors={this.selectedAuthors}
+          reviewerList={reviewerList}
+          selectedReviewers={this.selectedReviewers}
+          selectedMyApprovalStatuses={this.selectedMyApprovalStatuses}
+          selectedAlternateStatusPr={this.selectedAlternateStatusPr}
+        />
+
+        {errorMessage.length > 0 ? (
+          <ShowErrorMessage
+            errorMessage={errorMessage}
+            onDismiss={this.resetErrorMessage}
           />
+        ) : null}
 
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedRepos"
-              filter={this.filter}
-              selection={this.selectedRepos}
-              placeholder="Repositories"
-              showFilterBox={true}
-              noItemsText="No repository found"
-              items={repositories.map(i => {
-                return {
-                  id: i.id,
-                  text: i.name
-                };
-              })}
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedSourceBranches"
-              filter={this.filter}
-              showFilterBox={true}
-              noItemsText="No source branch found"
-              items={sourceBranchList.map(i => {
-                return {
-                  id: i.displayName,
-                  text: i.displayName
-                };
-              })}
-              selection={this.selectedSourceBranches}
-              placeholder="Source Branch"
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedTargetBranches"
-              filter={this.filter}
-              showFilterBox={true}
-              noItemsText="No target branch found"
-              items={targetBranchList.map(i => {
-                return {
-                  id: i.displayName,
-                  text: i.displayName
-                };
-              })}
-              selection={this.selectedTargetBranches}
-              placeholder="Target Branch"
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedAuthors"
-              noItemsText="No one found"
-              filter={this.filter}
-              showFilterBox={true}
-              items={createdByList.map(i => {
-                return {
-                  id: i.id,
-                  text: i.displayName
-                };
-              })}
-              selection={this.selectedAuthors}
-              placeholder="Created By"
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedReviewers"
-              noItemsText="No one found"
-              filter={this.filter}
-              showFilterBox={true}
-              items={reviewerList.map(i => {
-                return {
-                  id: i.id,
-                  text: i.displayName
-                };
-              })}
-              selection={this.selectedReviewers}
-              placeholder="Reviewers"
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedMyApprovalStatuses"
-              filter={this.filter}
-              items={this.myApprovalStatuses}
-              selection={this.selectedMyApprovalStatuses}
-              placeholder="My Approval Status"
-            />
-          </React.Fragment>
-
-          <React.Fragment>
-            <DropdownFilterBarItem
-              filterItemKey="selectedIsDraft"
-              filter={this.filter}
-              items={this.isDraftItems}
-              selection={this.selectedIsDraft}
-              placeholder="Is Draft"
-            />
-          </React.Fragment>
-        </FilterBar>
-
-        {this.getRenderContent()}
+        <div className="margin-top-8">
+          <br />
+          {this.getRenderContent()}
+        </div>
       </div>
     );
   }
 
+  resetErrorMessage() {
+    this.setState({
+      errorMessage: ""
+    });
+  }
+
+  async selectedProjectChanged(
+    event: React.SyntheticEvent<HTMLElement, Event>,
+    item: IListBoxItem<TeamProjectReference | ProjectInfo>
+  ) {
+    const { projects } = this.state;
+    const projectIndex = projects.findIndex(p => {
+      return p.id === item.id;
+    });
+
+    await this.getRepositories(projects[projectIndex]);
+    this.refresh();
+  }
+
   getRenderContent() {
-    if (this.pullRequestItemProvider.value.length === 0) {
+    const { pullRequestCount } = this.state;
+    if (pullRequestCount === 0) {
       return (
         <ZeroData
-          primaryText="Yeah! No Pull Request to be reviewed. "
+          primaryText="Yeah! No Pull Request to be reviewed. Well done!"
           secondaryText={
             <span>
               Enjoy your free time to code and raise PRs for your team/project!
@@ -629,9 +781,8 @@ export class PullRequestsTab extends React.Component<
           imageAltText="No PRs!"
           imagePath={require("../images/emptyPRList.png")}
           actionText="Refresh"
-          // @ts-ignore
-          actionType={ZeroDataActionType.ctaButton}
-          onActionClick={(event, item) => this.refresh()}
+          actionType={getZeroDataActionTypeValue("ctaButton")}
+          onActionClick={this.refresh}
         />
       );
     } else {
@@ -639,17 +790,88 @@ export class PullRequestsTab extends React.Component<
         <Card
           className="flex-grow bolt-table-card"
           contentProps={{ contentPadding: false }}
-          titleProps={{ text: "List of Active Pull Requests" }}
+          titleProps={{
+            text: `Pull Requests (${this.pullRequestItemProvider.value.length})`
+          }}
           headerCommandBarItems={this.listHeaderColumns}
         >
           <React.Fragment>
             <Table<Data.PullRequestModel>
-              columns={this.columns}
+              columns={Data.columns}
               itemProvider={this.pullRequestItemProvider}
               showLines={true}
+              selection={this.prRowSelecion}
+              singleClickActivation={true}
               role="table"
             />
           </React.Fragment>
+
+          <Observer isDialogOpen={this.isDialogOpen}>
+            {(props: { isDialogOpen: boolean }) => {
+              return props.isDialogOpen ? (
+                <Dialog
+                  titleProps={{ text: "Help" }}
+                  footerButtonProps={[
+                    {
+                      text: "Close",
+                      onClick: this.onHelpDismiss
+                    }
+                  ]}
+                  onDismiss={this.onHelpDismiss}
+                >
+                  <strong>Statuses legend:</strong>
+                  <div className="flex-column" style={{ minWidth: "120px" }}>
+                    <div className="body-m secondary-text">
+                      <Status
+                        {...Statuses.Waiting}
+                        key="waiting"
+                        size={getStatusSizeValue("m")}
+                        className="status-example flex-self-center "
+                      />
+                      &nbsp;No one has voted yet.
+                    </div>
+                    <div className="body-m secondary-text">
+                      <Status
+                        {...Statuses.Running}
+                        key="running"
+                        size={getStatusSizeValue("m")}
+                        className="status-example flex-self-center "
+                      />
+                      &nbsp;Review in progress, not all required reviwers have
+                      approved.
+                    </div>
+                    <div className="body-m secondary-text">
+                      <Status
+                        {...Statuses.Success}
+                        key="success"
+                        size={getStatusSizeValue("m")}
+                        className="status-example flex-self-center "
+                      />
+                      &nbsp;Ready for completion.
+                    </div>
+                    <div className="body-m secondary-text">
+                      <Status
+                        {...Statuses.Warning}
+                        key="warning"
+                        size={getStatusSizeValue("m")}
+                        className="status-example flex-self-center "
+                      />
+                      &nbsp;At least one reviewer is Waiting For Author.
+                    </div>
+                    <div className="body-m secondary-text">
+                      <Status
+                        {...Statuses.Failed}
+                        key="failed"
+                        size={getStatusSizeValue("m")}
+                        className="status-example flex-self-center "
+                      />
+                      &nbsp;One or more members has rejected.
+                    </div>
+                  </div>
+                </Dialog>
+              ) : null;
+            }}
+          </Observer>
         </Card>
       );
     }
@@ -666,437 +888,32 @@ export class PullRequestsTab extends React.Component<
       iconProps: {
         iconName: "fabric-icon ms-Icon--Refresh"
       }
-    }
-  ];
-
-  private columns: ITableColumn<Data.PullRequestModel>[] = [
+    },
     {
-      id: "title",
-      name: "Pull Request",
-      renderCell: this.renderTitleColumn,
-      readonly: true,
-      sortProps: {
-        ariaLabelAscending: "Sorted A to Z",
-        ariaLabelDescending: "Sorted Z to A"
+      id: "help",
+      text: "Help",
+      isPrimary: true,
+      onActivate: () => {
+        this.isDialogOpen.value = true;
       },
-      width: -33
-    },
-    {
-      className: "pipelines-two-line-cell",
-      id: "details",
-      name: "Details",
-      renderCell: this.renderDetailsColumn,
-      width: -33
-    },
-    {
-      id: "reviewers",
-      name: "Reviewers",
-      renderCell: this.renderReviewersColumn,
-      width: -33
-    },
-    {
-      id: "time",
-      readonly: true,
-      renderCell: this.renderDateColumn,
-      width: -33
+      iconProps: {
+        iconName: "fabric-icon ms-Icon--Help"
+      }
     }
   ];
-
-  private renderTitleColumn(
-    rowIndex: number,
-    columnIndex: number,
-    tableColumn: ITableColumn<Data.PullRequestModel>,
-    tableItem: Data.PullRequestModel
-  ): JSX.Element {
-    const tooltip = `from ${tableItem.sourceBranch!.branchName} into ${tableItem.targetBranch!.branchName}`;
-    return (
-      <TwoLineTableCell
-        className="bolt-table-cell-content-with-inline-link no-v-padding"
-        key={"col-" + columnIndex}
-        columnIndex={columnIndex}
-        tableColumn={tableColumn}
-        line1={
-          <span className="flex-row scroll-hidden">
-            <Status
-              {...getStatusIndicatorData(
-                tableItem.gitPullRequest.status.toString()
-              ).statusProps}
-              className="icon-large-margin"
-              // @ts-ignore
-              size={StatusSize.l}
-            />
-            <span className="flex-row scroll-hidden">
-              {PullRequestTypeIcon()}
-              <Tooltip text={tableItem.gitPullRequest.title} overflowOnly>
-                <Link
-                  className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-                  excludeTabStop
-                  href={tableItem.pullRequestHref}
-                  target="_blank"
-                >
-                  {tableItem.title}
-                </Link>
-              </Tooltip>
-              {tableItem.gitPullRequest.isDraft ? (
-                <Pill
-                  color={Data.draftColor}
-                  // @ts-ignore
-                  size={PillSize.regular}
-                >
-                  Draft
-                </Pill>
-              ) : (
-                ""
-              )}
-              {hasPullRequestFailure(tableItem) ? (
-                <Pill
-                  color={Data.rejectedColor}
-                  // @ts-ignore
-                  size={PillSize.regular}
-                >
-                  {getPullRequestFailureDescription(tableItem)}
-                </Pill>
-              ) : (
-                ""
-              )}
-            </span>
-          </span>
-        }
-        line2={
-          <Tooltip text={tooltip} overflowOnly>
-            <span className="fontSize font-size secondary-text flex-row flex-center text-ellipsis">
-              {Icon({
-                className: "icon-margin",
-                iconName: "OpenSource",
-                key: "branch-name"
-              })}
-              <Link
-                className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-                excludeTabStop
-                href={tableItem.repositoryHref}
-                target="_blank"
-              >
-                {tableItem.gitPullRequest.repository.name}
-              </Link>
-              -> from{" "}
-              <Link
-                className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-                excludeTabStop
-                href={tableItem.sourceBranchHref}
-                target="_blank"
-              >
-                {tableItem.sourceBranch!.branchName}
-              </Link>
-              into
-              <Link
-                className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-                excludeTabStop
-                href={`${tableItem.targetBranchHref}`}
-                target="_blank"
-              >
-                {tableItem.targetBranch!.branchName}
-              </Link>
-            </span>
-          </Tooltip>
-        }
-      />
-    );
-  }
-
-  private renderDetailsColumn(
-    rowIndex: number,
-    columnIndex: number,
-    tableColumn: ITableColumn<Data.PullRequestModel>,
-    tableItem: Data.PullRequestModel
-  ): JSX.Element {
-    return (
-      <TwoLineTableCell
-        className="bolt-table-cell-content-with-inline-link no-v-padding"
-        key={"col-" + columnIndex}
-        columnIndex={columnIndex}
-        tableColumn={tableColumn}
-        line1={
-          <span className="flex-row scroll-hidden">
-            <VssPersona
-              className="icon-margin"
-              imageUrl={
-                tableItem.gitPullRequest.createdBy._links["avatar"].href
-              }
-              size={"small"}
-              displayName={tableItem.gitPullRequest.createdBy.displayName}
-            />
-            <Link
-              className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-              excludeTabStop
-              href="#"
-              target="_blank"
-            >
-              {tableItem.gitPullRequest.createdBy.displayName}
-            </Link>
-          </span>
-        }
-        line2={
-          <div>
-            <br />
-            <Icon iconName="BranchCommit" />
-            <Link
-              className="fontSizeM font-size-m text-ellipsis bolt-table-link bolt-table-inline-link"
-              excludeTabStop
-              href={tableItem.lastCommitUrl}
-              target="_blank"
-            >
-              {tableItem.lastShortCommitId}
-            </Link>
-          </div>
-        }
-      />
-    );
-  }
-
-  private renderReviewersColumn(
-    rowIndex: number,
-    columnIndex: number,
-    tableColumn: ITableColumn<Data.PullRequestModel>,
-    tableItem: Data.PullRequestModel
-  ): JSX.Element {
-    return (
-      <TwoLineTableCell
-        className="bolt-table-cell-content-with-inline-link no-v-padding"
-        key={"col-" + columnIndex}
-        columnIndex={columnIndex}
-        tableColumn={tableColumn}
-        line1={
-          <span className="fontSize font-size secondary-text flex-row flex-center text-ellipsis">
-            <strong>Reviewers:&nbsp;</strong>
-            <br />
-          </span>
-        }
-        line2={
-          <PillGroup
-            className="flex-row"
-            // @ts-ignore
-            overflow={PillGroupOverflow.wrap}
-          >
-            {tableItem.gitPullRequest.reviewers
-              .sort(sortMethod)
-              .map((reviewer, i) => {
-                // @ts-ignore
-                return (
-                  <Pill
-                    key={reviewer.id}
-                    // color={getReviewerColor(reviewer)}
-                    // @ts-ignore
-                    variant={PillVariant.colored}
-                    // @ts-ignore
-                    size={PillSize.large}
-                  >
-                    <div className="flex-row rhythm-horizontal-8">
-                      {getReviewerVoteIconStatus(reviewer)}
-                      <VssPersona
-                        className="icon-margin"
-                        imageUrl={reviewer._links["avatar"].href}
-                        size={"small"}
-                        displayName={reviewer.displayName}
-                      />
-                    </div>
-                  </Pill>
-                );
-              })}
-          </PillGroup>
-        }
-      />
-    );
-  }
-
-  private renderDateColumn(
-    rowIndex: number,
-    columnIndex: number,
-    tableColumn: ITableColumn<Data.PullRequestModel>,
-    tableItem: Data.PullRequestModel
-  ): JSX.Element {
-    return (
-      <TwoLineTableCell
-        key={"col-" + columnIndex}
-        columnIndex={columnIndex}
-        tableColumn={tableColumn}
-        line1={WithIcon({
-          className: "fontSize font-size",
-          iconProps: { iconName: "Calendar" },
-          children: (
-            <Ago
-              date={
-                tableItem.gitPullRequest.creationDate!
-              } /*format={AgoFormat.Extended}*/
-            />
-          )
-        })}
-        line2={WithIcon({
-          className: "fontSize font-size bolt-table-two-line-cell-item",
-          iconProps: { iconName: "Clock" },
-          children: (
-            <Duration
-              startDate={tableItem.gitPullRequest.creationDate!}
-              endDate={new Date(Date.now())}
-            />
-          )
-        })}
-      />
-    );
-  }
 }
 
-function getStatusIndicatorData(status: string): Data.IStatusIndicatorData {
-  status = status || "";
-  status = status.toLowerCase();
-  const indicatorData: Data.IStatusIndicatorData = {
-    label: "Success",
-    statusProps: { ...Statuses.Success, ariaLabel: "Success" }
-  };
-
-  /**
-     * Status not set. Default state.
-    NotSet = 0,
-     * Pull request is active.
-    Active = 1,
-     * Pull request is abandoned.
-    Abandoned = 2,
-     * Pull request is completed.
-    Completed = 3,
-     * Used in pull request search criterias to include all statuses.
-    All = 4
-  */
-
-  switch (status) {
-    case "0": //NotSet
-      indicatorData.statusProps = {
-        ...Statuses.Skipped,
-        ariaLabel: "Pending"
-      };
-      indicatorData.label = "Pending";
-      break;
-    case "1": //Active
-      indicatorData.statusProps = {
-        ...Statuses.Waiting,
-        ariaLabel: "Active"
-      };
-      indicatorData.label = "Active";
-      break;
-    case "2":
-      indicatorData.statusProps = {
-        ...Statuses.Warning,
-        ariaLabel: "Abandoned"
-      };
-      indicatorData.label = "Abandoned";
-      break;
-    case "3":
-      indicatorData.statusProps = {
-        ...Statuses.Success,
-        ariaLabel: "Success"
-      };
-      indicatorData.label = "Completed";
-      break;
-  }
-
-  return indicatorData;
-}
-
-function hasPullRequestFailure(pullRequest: Data.PullRequestModel): boolean {
-  const prMergeStatus = pullRequest.gitPullRequest.mergeStatus;
+function ShowErrorMessage(props: any) {
   return (
-    prMergeStatus === PullRequestAsyncStatus.Conflicts ||
-    prMergeStatus === PullRequestAsyncStatus.Failure ||
-    prMergeStatus === PullRequestAsyncStatus.RejectedByPolicy
-  );
-}
-
-function getPullRequestFailureDescription(
-  pullRequest: Data.PullRequestModel
-): string {
-  const prMergeStatus = pullRequest.gitPullRequest.mergeStatus;
-  switch (prMergeStatus) {
-    case PullRequestAsyncStatus.RejectedByPolicy:
-      return "Rejected by Policy";
-    default:
-      return PullRequestAsyncStatus[prMergeStatus];
-  }
-}
-
-function getVoteDescription(vote: number): string {
-  switch (vote) {
-    case 10:
-      return "Approved";
-    case 5:
-      return "Approved with Suggestions";
-    case -10:
-      return "Rejected";
-    case -5:
-      return "Waiting for Author";
-  }
-
-  return "No Vote";
-}
-
-function getReviewerVoteIconStatus(reviewer: IdentityRefWithVote): JSX.Element {
-  let voteStatusIcon = Statuses.Waiting;
-
-  switch (Data.ReviewerVoteOption[reviewer.vote]) {
-    case "Approved":
-      voteStatusIcon = Statuses.Success;
-      break;
-    case "ApprovedWithSuggestions":
-      voteStatusIcon = Statuses.Success;
-      break;
-    case "Rejected":
-      voteStatusIcon = Statuses.Failed;
-      break;
-    case "WaitingForAuthor":
-      voteStatusIcon = Statuses.Warning;
-      break;
-  }
-
-  return (
-      <Status
-        {...voteStatusIcon}
-        key="success"
-        // @ts-ignore
-        size={StatusSize.m}
-        className="status-example flex-self-center"
-      />
-  );
-}
-
-function WithIcon(props: {
-  className?: string;
-  iconProps: IIconProps;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className={css(props.className, "flex-row flex-center")}>
-      {Icon({ ...props.iconProps, className: "icon-margin" })}
-      {props.children}
+    <div className="flex-grow margin-top-8">
+      <br />
+      <MessageCard
+        className="flex-self-stretch"
+        severity={"Error" as MessageCardSeverity}
+        onDismiss={props.onDismiss}
+      >
+        {props.errorMessage}
+      </MessageCard>
     </div>
   );
-}
-
-function PullRequestTypeIcon() {
-  let iconName: string = "BranchPullRequest";
-
-  return Icon({
-    className: "bolt-table-inline-link-left-padding icon-margin",
-    iconName: iconName,
-    key: "release-type"
-  });
-}
-
-function sortMethod(
-  a: Data.BranchDropDownItem | IdentityRef,
-  b: Data.BranchDropDownItem | IdentityRef
-) {
-  if (a.displayName! < b.displayName!) {
-    return -1;
-  }
-  if (a.displayName! > b.displayName!) {
-    return 1;
-  }
-  return 0;
 }

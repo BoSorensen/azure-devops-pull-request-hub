@@ -1,13 +1,4 @@
 {
-    "baseUri": "https://localhost:3000",
-    "id": "pull-request-manager-hub-new-dev",
-    "public": false,
-    "name": "Pull Request Manager Hub - DEV",
-    "version": "1.20200130.1",
-    "scopes": [
-      "vso.code",
-      "vso.build"
-    ],
   "contributions": [{
     "id": "view",
     "type": "ms.vss-web.hub",
@@ -15,7 +6,7 @@
       "ms.vss-code-web.code-hub-group"
     ],
     "properties": {
-      "name": "Pull Request Manager Hub - DEV",
+      "name": "Pull Request Manager Hub",
       "uri": "build/index.html",
       "icon": {
         "light": "marketplace/icon-light.png",

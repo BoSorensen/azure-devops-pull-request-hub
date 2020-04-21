@@ -1,0 +1,90 @@
+@import "azure-devops-ui/Core/_platformCommon.scss";
+
+.repos-pr-reviewer-vote {
+  bottom: -3px;
+  right: -2px;
+}
+
+.reviewer-vote-item {
+  margin: 5px;
+}
+
+.pill {
+  border-radius: 6px;
+  margin-top: 6px;
+}
+
+.pill-draft.outlined {
+  background-color: transparent;
+  border-color: rgb(152, 198, 255);
+  color: rgb(152, 198, 255);
+}
+
+.pill-conflicts.outlined {
+  background-color: transparent;
+  border-color: rgb(241, 112, 123);
+  color: rgb(241, 112, 123);
+}
+
+.pill-requiredred.outlined {
+  background-color: transparent;
+  border-color: rgb(241, 112, 123);
+  color: rgb(241, 112, 123);
+}
+
+.pill-required.outlined {
+  background-color: transparent;
+  border-color: rgb(146, 144, 144);
+  color: rgb(146, 144, 144);
+}
+
+.pill-autocomplete.outlined {
+  background-color: transparent;
+  border-color: rgb(221, 149, 14);
+  color: rgb(221, 149, 14);
+}
+
+.title-column-subdetails {
+  text-align: center;
+}
+
+.icon-column-subdetails {
+  padding-top: 6px;
+  padding-left: 6px;
+  margin-left: 5px;
+}
+
+.icon-red{
+  color: red;
+  font-size: x-large;
+  font-weight: bold;
+
+}
+.icon-green{
+  color: green;
+  font-size: x-large;
+  font-weight: bold;
+}
+
+.icon-policy-red{
+  color: rgb(233, 0, 0);
+}
+
+.icon-policy-green{
+  color: rgb(1, 165, 1);
+}
+
+.span-tooltip{
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 12px;
+  font-weight: normal;
+  white-space: normal;
+}
+
+.td-vertical-align{
+  vertical-align: top;
+}
+
+.table-border-spacing{
+  border-spacing: 0px;
+}
